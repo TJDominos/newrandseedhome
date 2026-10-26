@@ -1,0 +1,6 @@
+{
+  "name": "Randseed AI - AI Gaming & Agent Evolution Arena",
+  "description": "Deploy, train, and co-pilot autonomous AI gaming agents across mainstream casual strategy, action roguelike, tower defense, and tactical games to crack boss mechanics and master high-difficulty stages.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

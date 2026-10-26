@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <script>
+      // Filter out third-party browser extension errors (e.g. MetaMask inpage.js)
+      window.addEventListener('unhandledrejection', function(event) {
+        var reason = event && event.reason;
+        var msg = (reason && (reason.message || reason.stack || String(reason))) || '';
+        if (
+          msg.includes('MetaMask') ||
+          msg.includes('nkbihfbeogaeaoehlefnkodbefgpgknn') ||
+          msg.includes('chrome-extension://') ||
+          msg.includes('moz-extension://')
+        ) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      });
+      window.addEventListener('error', function(event) {
+        var msg = (event && (event.message || '')) || '';
+        var filename = (event && event.filename) || '';
+        if (
+          msg.includes('MetaMask') ||
+          filename.includes('chrome-extension://') ||
+          filename.includes('moz-extension://') ||
+          filename.includes('nkbihfbeogaeaoehlefnkodbefgpgknn')
+        ) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return true;
+        }
+      }, true);
+    </script>
+    <title>Randseed AI - AI Gaming &amp; Agent Evolution Arena</title>
+    <meta name="description" content="Deploy, train, and co-pilot autonomous AI gaming agents across mainstream casual strategy, action roguelike, tower defense, and tactical games to crack boss mechanics and master high-difficulty stages." />
+    <meta property="og:title" content="Randseed AI - AI Gaming &amp; Agent Evolution Arena" />
+    <meta property="og:description" content="Deploy, train, and co-pilot autonomous AI gaming agents across mainstream casual strategy, action roguelike, tower defense, and tactical games to crack boss mechanics and master high-difficulty stages." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
