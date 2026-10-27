@@ -49,6 +49,7 @@ import {
   Terminal,
   X,
   ArrowUpRight,
+  ArrowUp,
   Camera
 } from 'lucide-react';
 
@@ -159,6 +160,7 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
   const [recordSourceCategory, setRecordSourceCategory] = useState<'autoplay' | 'follow'>('autoplay');
   const [recordGameFilter, setRecordGameFilter] = useState<string>('all');
   const [recordStatusFilter, setRecordStatusFilter] = useState<'all' | 'untrained' | 'trained'>('all');
+  const [selectedModel, setSelectedModel] = useState<string>('GPT-6 Luna');
 
   const recognitionRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -2168,36 +2170,11 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
             </div>
           )}
 
-          {/* Input Bar: [+] [Mic] [Input] [Send] */}
-          <div className="flex items-center gap-1.5 bg-slate-50 p-1.5 rounded-2xl border border-slate-200 focus-within:border-indigo-500 transition-colors">
-            {/* '+' Button to the left of Microphone icon */}
-            <button
-              type="button"
-              onClick={() => setAttachMenuOpen((prev) => !prev)}
-              className={`p-2.5 rounded-xl font-bold flex items-center justify-center transition-all shrink-0 cursor-pointer ${
-                attachMenuOpen || pendingAttachments.length > 0
-                  ? 'bg-slate-900 text-white shadow-xs'
-                  : 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs'
-              }`}
-              title="Attach Game, Skill, or Game Record"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
-
-            {/* Microphone Icon right next to '+' Button */}
-            <button
-              type="button"
-              onClick={toggleVoiceRecording}
-              className={`p-2.5 rounded-xl font-bold flex items-center justify-center transition-all shrink-0 cursor-pointer ${
-                isRecording
-                  ? 'bg-rose-600 text-white animate-pulse shadow-md shadow-rose-500/30'
-                  : 'bg-white hover:bg-indigo-600 text-indigo-600 hover:text-white border border-slate-200 shadow-2xs'
-              }`}
-              title={isRecording ? 'Stop Voice Recording' : 'Voice Microphone Input'}
-            >
-              {isRecording ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-            </button>
-
+          {/* Reference 2-Row Composer Layout:
+              Row 1: Full-width Input ("Chat with <Agent Name>")
+              Row 2: Left: [+] + [Model] | Right: [Mic] [ArrowUp] */}
+          <div className="rounded-2xl bg-[#F3F4F6]/90 border border-slate-200/80 focus-within:border-slate-300 focus-within:bg-[#F3F4F6] px-3.5 pt-3 pb-2.5 transition-all">
+            {/* Top Row: Text Input */}
             <input
               type="text"
               value={inputText}
@@ -2208,23 +2185,78 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
                   handleSend();
                 }
               }}
-              placeholder={
-                isRecording
-                  ? 'Listening to speech...'
-                  : `Ask ${userState.agent.name} or link Game / Skill / Record...`
-              }
-              className="flex-1 bg-transparent px-2 py-1.5 text-xs sm:text-sm text-slate-900 placeholder-slate-400 focus:outline-none min-w-0"
+              placeholder={isRecording ? 'Listening to speech...' : `Chat with ${userState.agent.name}`}
+              className="w-full bg-transparent text-sm text-slate-900 placeholder-slate-400 focus:outline-none"
             />
 
-            <button
-              type="button"
-              disabled={!inputText.trim() && pendingAttachments.length === 0 && !isRecording}
-              onClick={() => handleSend()}
-              className="p-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-bold rounded-xl flex items-center justify-center transition-all shadow-xs active:scale-95 shrink-0 cursor-pointer"
-              title="Send message"
-            >
-              <Send className="w-4 h-4 fill-current" />
-            </button>
+            {/* Bottom Row: Toolbar Controls */}
+            <div className="mt-3 flex items-center justify-between gap-2">
+              {/* Left Controls: [+] (without Agent beside it) + Model + Effort Pill */}
+              <div className="flex items-center gap-2.5 min-w-0">
+                {/* '+' Attachment Button */}
+                <button
+                  type="button"
+                  onClick={() => setAttachMenuOpen((prev) => !prev)}
+                  className={`p-1 rounded-lg flex items-center justify-center transition-colors shrink-0 cursor-pointer ${
+                    attachMenuOpen || pendingAttachments.length > 0
+                      ? 'bg-slate-900 text-white'
+                      : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/70'
+                  }`}
+                  title="Attach Game, Skill, or Game Record"
+                >
+                  <Plus className="w-4 h-4 stroke-[1.75]" />
+                </button>
+
+                {/* Model Selector (e.g. GPT-6 Luna) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const models = ['GPT-6 Luna', 'GPT-6 Pro', 'Neural-X2'];
+                    const nextIdx = (models.indexOf(selectedModel) + 1) % models.length;
+                    setSelectedModel(models[nextIdx]);
+                  }}
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 transition-colors truncate cursor-pointer"
+                  title="Click to switch model"
+                >
+                  <Cpu className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                  <span className="truncate">{selectedModel}</span>
+                </button>
+              </div>
+
+              {/* Right Controls: [Mic] + [Up Arrow Send] */}
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={toggleVoiceRecording}
+                  className={`p-1.5 rounded-lg flex items-center justify-center transition-colors cursor-pointer ${
+                    isRecording
+                      ? 'bg-rose-600 text-white animate-pulse'
+                      : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/70'
+                  }`}
+                  title={isRecording ? 'Stop Voice Recording' : 'Voice Microphone Input'}
+                >
+                  {isRecording ? (
+                    <MicOff className="w-4 h-4 stroke-[1.75]" />
+                  ) : (
+                    <Mic className="w-4 h-4 stroke-[1.75]" />
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  disabled={!inputText.trim() && pendingAttachments.length === 0 && !isRecording}
+                  onClick={() => handleSend()}
+                  className={`p-1.5 rounded-lg flex items-center justify-center transition-all cursor-pointer ${
+                    inputText.trim() || pendingAttachments.length > 0 || isRecording
+                      ? 'bg-slate-900 text-white hover:bg-indigo-600 shadow-2xs'
+                      : 'text-slate-300 cursor-not-allowed'
+                  }`}
+                  title="Send message"
+                >
+                  <ArrowUp className="w-4 h-4 stroke-[2]" />
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
