@@ -27,11 +27,16 @@ import { PersonalCenterSidebar } from './components/PersonalCenterSidebar';
 import { BottomActionBar } from './components/BottomActionBar';
 import { AuthModal } from './components/AuthModal';
 import { ArcadeGameModal } from './components/ArcadeGameModal';
-import { Bot, ChevronRight } from 'lucide-react';
+import { Bot, ChevronRight, GripVertical } from 'lucide-react';
 
 const STORAGE_KEY_CONVERSATIONS = 'randseed_agent_conversations_v2';
 const STORAGE_KEY_EVENTS = 'randseed_agent_result_events_v2';
 const STORAGE_KEY_LOGS = 'randseed_agent_logs_v2';
+const STORAGE_KEY_AGENT_WIDTH = 'randseed_agent_width_v2';
+
+const MIN_AGENT_WIDTH = 360;
+const MAX_AGENT_WIDTH = 680;
+const DEFAULT_AGENT_WIDTH = 448;
 
 const DEFAULT_CONVERSATIONS: ChatConversation[] = [
   {
@@ -87,6 +92,57 @@ export default function App() {
 
   // Left Sidebar is the Agent: default expanded (true)
   const [isAgentOpen, setIsAgentOpen] = useState<boolean>(true);
+  const [agentWidth, setAgentWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_AGENT_WIDTH);
+      if (saved) {
+        const parsed = parseInt(saved, 10);
+        if (!Number.isNaN(parsed)) {
+          return Math.min(MAX_AGENT_WIDTH, Math.max(MIN_AGENT_WIDTH, parsed));
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return DEFAULT_AGENT_WIDTH;
+  });
+  const [isResizingAgent, setIsResizingAgent] = useState<boolean>(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_AGENT_WIDTH, String(agentWidth));
+    } catch {
+      // ignore
+    }
+  }, [agentWidth]);
+
+  const handleStartResizeAgent = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = agentWidth;
+    setIsResizingAgent(true);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const deltaX = moveEvent.clientX - startX;
+      const dynamicMax = Math.min(MAX_AGENT_WIDTH, Math.floor(window.innerWidth * 0.55));
+      const effectiveMax = Math.max(MIN_AGENT_WIDTH, dynamicMax);
+      const nextWidth = Math.min(effectiveMax, Math.max(MIN_AGENT_WIDTH, startWidth + deltaX));
+      setAgentWidth(nextWidth);
+    };
+
+    const handlePointerUp = () => {
+      setIsResizingAgent(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+  };
 
   // Active Arcade Game Modal state
   const [arcadeGameOpen, setArcadeGameOpen] = useState<boolean>(false);
@@ -517,39 +573,87 @@ export default function App() {
           </div>
         )}
 
-        <div className={`grid grid-cols-1 ${isAgentOpen ? 'lg:grid-cols-12' : 'lg:grid-cols-1'} gap-6 items-start h-full min-h-0`}>
+        <div className="flex flex-col lg:flex-row items-stretch h-full min-h-0 gap-6 lg:gap-0">
           
-          {/* LEFT COLUMN / SIDEBAR: Agent Console */}
+          {/* LEFT COLUMN / SIDEBAR: Resizable Agent Console (min 340px, max 680px) */}
           {isAgentOpen && (
-            <div className="lg:col-span-4 h-full min-h-0 transition-all duration-200">
-              <HumanoidAgent
-                userState={userState}
-                conversations={conversations}
-                activeConversationId={activeConversationId}
-                onSelectConversation={setActiveConversationId}
-                onNewConversation={handleNewConversation}
-                onDeleteConversation={handleDeleteConversation}
-                onUpdateMessage={handleUpdateMessageInActiveConversation}
-                onQuickActivateInAgent={() => handleRegisterSuccess('Commander', 'commander@randseed.ai')}
-                onUpdateAgent={handleUpdateAgent}
-                onOpenAuth={() => setAuthModalOpen(true)}
-                onCommandSubmitted={handleSendMessage}
-                isThinking={isAgentThinking}
-                activeTab={agentTab}
-                onChangeTab={setAgentTab}
-                games={games}
-                activeGame={activeGame}
-                onLaunchGame={handleLaunchGame}
-                resultEvents={resultEvents}
-                onAddResultEvent={handleAddResultEvent}
-                agentLogs={agentLogs}
-                onAddAgentLog={handleAddAgentLog}
-              />
-            </div>
+            <>
+              <div
+                style={
+                  {
+                    '--agent-width': `${agentWidth}px`,
+                    '--agent-min-width': `${MIN_AGENT_WIDTH}px`,
+                    '--agent-max-width': `${MAX_AGENT_WIDTH}px`
+                  } as React.CSSProperties
+                }
+                className="w-full lg:w-[var(--agent-width)] lg:min-w-[var(--agent-min-width)] lg:max-w-[var(--agent-max-width)] lg:shrink-0 h-full min-h-0"
+              >
+                <HumanoidAgent
+                  userState={userState}
+                  conversations={conversations}
+                  activeConversationId={activeConversationId}
+                  onSelectConversation={setActiveConversationId}
+                  onNewConversation={handleNewConversation}
+                  onDeleteConversation={handleDeleteConversation}
+                  onUpdateMessage={handleUpdateMessageInActiveConversation}
+                  onQuickActivateInAgent={() => handleRegisterSuccess('Commander', 'commander@randseed.ai')}
+                  onUpdateAgent={handleUpdateAgent}
+                  onOpenAuth={() => setAuthModalOpen(true)}
+                  onCommandSubmitted={handleSendMessage}
+                  isThinking={isAgentThinking}
+                  activeTab={agentTab}
+                  onChangeTab={setAgentTab}
+                  games={games}
+                  activeGame={activeGame}
+                  onLaunchGame={handleLaunchGame}
+                  resultEvents={resultEvents}
+                  onAddResultEvent={handleAddResultEvent}
+                  agentLogs={agentLogs}
+                  onAddAgentLog={handleAddAgentLog}
+                />
+              </div>
+
+              {/* DRAGGABLE SPLITTER BAR (Desktop lg+) */}
+              <div
+                onPointerDown={handleStartResizeAgent}
+                onDoubleClick={() => setAgentWidth(DEFAULT_AGENT_WIDTH)}
+                title={`Drag left/right to resize Agent (${MIN_AGENT_WIDTH}px – ${MAX_AGENT_WIDTH}px). Double-click to reset.`}
+                className="hidden lg:flex w-6 shrink-0 flex-col items-center justify-center cursor-col-resize group select-none relative z-20"
+              >
+                {/* Vertical guide line */}
+                <div
+                  className={`w-[2px] h-[calc(100%-2rem)] rounded-full transition-colors duration-150 ${
+                    isResizingAgent
+                      ? 'bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.5)]'
+                      : 'bg-slate-200 group-hover:bg-indigo-400'
+                  }`}
+                />
+                {/* Upper grip pill (visible near top fold & banners) */}
+                <div
+                  className={`absolute top-28 w-4 h-9 rounded-full border flex items-center justify-center transition-all shadow-2xs ${
+                    isResizingAgent
+                      ? 'bg-indigo-600 border-indigo-600 text-white scale-110'
+                      : 'bg-white border-slate-300 text-slate-400 group-hover:border-indigo-400 group-hover:text-indigo-600'
+                  }`}
+                >
+                  <GripVertical className="w-3 h-3" />
+                </div>
+                {/* Width tooltip badge shown while resizing or hovering */}
+                <div
+                  className={`absolute top-16 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-md text-[10px] font-mono font-bold whitespace-nowrap pointer-events-none transition-opacity shadow-sm ${
+                    isResizingAgent
+                      ? 'opacity-100 bg-indigo-600 text-white'
+                      : 'opacity-0 group-hover:opacity-100 bg-slate-900 text-white'
+                  }`}
+                >
+                  {agentWidth}px
+                </div>
+              </div>
+            </>
           )}
 
           {/* RIGHT COLUMN: Independently Scrollable Game Heat Ranking Grid (16 Games) */}
-          <div className={`${isAgentOpen ? 'lg:col-span-8' : 'lg:col-span-12'} min-w-0 h-full transition-all duration-200`}>
+          <div className="flex-1 min-w-0 h-full">
             <GameRankingSection
               games={games}
               onLaunchGame={handleLaunchGame}

@@ -50,7 +50,12 @@ import {
   X,
   ArrowUpRight,
   ArrowUp,
-  Camera
+  Camera,
+  Edit2,
+  Download,
+  Share2,
+  Copy,
+  AtSign
 } from 'lucide-react';
 
 export type AgentPanelTab = 'chat' | 'evolution' | 'achievements' | 'log';
@@ -155,12 +160,25 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
   const [isTraining, setIsTraining] = useState(false);
   const [showMultiGameConfirm, setShowMultiGameConfirm] = useState(false);
 
-  // Skills Tab Sub-View & Game Records Category ('autoplay' vs 'follow')
-  const [skillsSubView, setSkillsSubView] = useState<'split' | 'skills' | 'records'>('split');
+  // Game Records Category ('autoplay' vs 'follow') in dedicated Records tab
   const [recordSourceCategory, setRecordSourceCategory] = useState<'autoplay' | 'follow'>('autoplay');
   const [recordGameFilter, setRecordGameFilter] = useState<string>('all');
   const [recordStatusFilter, setRecordStatusFilter] = useState<'all' | 'untrained' | 'trained'>('all');
   const [selectedModel, setSelectedModel] = useState<string>('GPT-6 Luna');
+
+  // Events tab optional raw logs drawer toggle
+  const [showRawLogsInEvents, setShowRawLogsInEvents] = useState<boolean>(false);
+
+  // Skill Custom Rename, Download, Share & Contextual Upgrade Modal states
+  const [editingSkillId, setEditingSkillId] = useState<string | null>(null);
+  const [editingSkillName, setEditingSkillName] = useState<string>('');
+  const [sharingSkillId, setSharingSkillId] = useState<string | null>(null);
+  const [copiedShareSkillId, setCopiedShareSkillId] = useState<string | null>(null);
+  const [upgradingSkillId, setUpgradingSkillId] = useState<string | null>(null);
+  const [upgradeSelectedRecordIds, setUpgradeSelectedRecordIds] = useState<string[]>([]);
+
+  // '@' Mention quick-link query state for input composer
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
 
   const recognitionRef = useRef<any>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
@@ -757,11 +775,222 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
     executeTrainSelectedDemos(singleGameDemos, false);
   };
 
+  // Helper: Resolve shortName for a GameItem (e.g. "cyber", "mecha", "fortress", "ronin")
+  const getGameShortName = (game: Pick<GameItem, 'id' | 'name' | 'shortName'>): string => {
+    if (game.shortName) return game.shortName.toLowerCase();
+    const map: Record<string, string> = {
+      'cyber-survivor': 'cyber',
+      'mecha-siege': 'mecha',
+      'citadel-defense': 'fortress',
+      'blade-souls': 'ronin',
+      'deep-space-mining': 'asteroid',
+      'neon-arena': 'neon'
+    };
+    if (map[game.id]) return map[game.id];
+    return game.name.split(/\s+/)[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+  };
+
+  // Helper: Resolve associated Game for a Skill
+  const getSkillAssociatedGame = (skillId: string, explicitGameId?: string) => {
+    const fallbackMap: Record<string, string> = {
+      'skill-kiting': 'cyber-survivor',
+      'skill-parry': 'blade-souls',
+      'skill-heatmap': 'cyber-survivor',
+      'skill-synergy': 'mecha-siege',
+      'skill-swarm': 'citadel-defense'
+    };
+    const resolvedId = explicitGameId || fallbackMap[skillId] || 'cyber-survivor';
+    const found = games.find((g) => g.id === resolvedId);
+    if (found) {
+      return {
+        ...found,
+        shortName: getGameShortName(found)
+      };
+    }
+    return {
+      id: resolvedId,
+      name: 'Cyber Survivor',
+      emoji: '⚡',
+      category: 'Action & Roguelike' as const,
+      shortName: getGameShortName({ id: resolvedId, name: 'Cyber Survivor' })
+    };
+  };
+
+  // Save custom renamed Skill
+  const handleSaveSkillName = (skillId: string) => {
+    const trimmed = editingSkillName.trim();
+    if (!trimmed) {
+      setEditingSkillId(null);
+      return;
+    }
+    const updatedPerks = userState.agent.perks.map((p) =>
+      p.id === skillId ? { ...p, name: trimmed, updatedAt: 'Just now' } : p
+    );
+    onUpdateAgent({
+      ...userState.agent,
+      perks: updatedPerks
+    });
+    setEditingSkillId(null);
+    showToast(`Renamed Skill to "${trimmed}"`);
+  };
+
+  // Download Skill as JSON configuration file
+  const handleDownloadSkill = (skill: UserAgent['perks'][0]) => {
+    const assocGame = getSkillAssociatedGame(skill.id, skill.gameId);
+    const payload = {
+      schema: 'randseed.agent.skill/v1',
+      id: skill.id,
+      name: skill.name,
+      version: skill.version || `v${skill.skillLevel || 1}.0`,
+      updatedAt: skill.updatedAt || 'Just now',
+      associatedGame: {
+        id: assocGame.id,
+        name: assocGame.name,
+        shortName: 'id' in assocGame ? getGameShortName(assocGame as GameItem) : 'cyber'
+      },
+      metricLabel: skill.metricLabel || 'Tactical Boost',
+      description: skill.description,
+      agentAuthor: userState.agent.name,
+      exportedAt: new Date().toISOString()
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const slug = skill.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    a.href = url;
+    a.download = `${slug}-${skill.version || 'v1.0'}.skill.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast(`Downloaded ${skill.name} (${skill.version || 'v1.0'})`);
+  };
+
+  // Open Skill Upgrade Modal -> Pre-selects all untrained records for this Skill's associated game by default
+  const handleOpenSkillUpgradeModal = (skill: UserAgent['perks'][0]) => {
+    const assocGame = getSkillAssociatedGame(skill.id, skill.gameId);
+    const gameRecords = behaviorTraces.filter((r) => r.gameId === assocGame.id);
+    const untrainedIds = gameRecords.filter((r) => !r.trained).map((r) => r.id);
+    // Default select all untrained records (if all are already trained, select all records for that game so user can re-train)
+    setUpgradeSelectedRecordIds(
+      untrainedIds.length > 0 ? untrainedIds : gameRecords.map((r) => r.id)
+    );
+    setUpgradingSkillId(skill.id);
+  };
+
+  // Confirm upgrading a specific Skill with selected Game Records (Autoplay & Follow)
+  const handleConfirmSkillUpgrade = () => {
+    if (!upgradingSkillId || upgradeSelectedRecordIds.length === 0) return;
+    const targetSkill = userState.agent.perks.find((p) => p.id === upgradingSkillId);
+    if (!targetSkill) return;
+
+    const recordsToTrain = behaviorTraces.filter((r) => upgradeSelectedRecordIds.includes(r.id));
+    if (recordsToTrain.length === 0) return;
+
+    setIsTraining(true);
+    const skillToUpgradeId = upgradingSkillId;
+    setUpgradingSkillId(null);
+
+    setTimeout(() => {
+      const currentLv = targetSkill.skillLevel || 1;
+      const prevVersion = targetSkill.version || `v${currentLv}.0`;
+      const nextVersion = bumpVersionString(prevVersion, currentLv);
+
+      const trainedSet = new Set(recordsToTrain.map((r) => r.id));
+      setBehaviorTraces((prev) =>
+        prev.map((t) => (trainedSet.has(t.id) ? { ...t, trained: true } : t))
+      );
+
+      const updatedPerks = userState.agent.perks.map((p) =>
+        p.id === skillToUpgradeId
+          ? {
+              ...p,
+              skillLevel: Math.min(p.maxSkillLevel || 5, currentLv + 1),
+              version: nextVersion,
+              updatedAt: 'Just now',
+              unlocked: true
+            }
+          : p
+      );
+
+      onUpdateAgent({
+        ...userState.agent,
+        tacticalDepth: Math.min(99, userState.agent.tacticalDepth + recordsToTrain.length),
+        microExecution: Math.min(99, userState.agent.microExecution + recordsToTrain.length),
+        perks: updatedPerks
+      });
+
+      const autoplayCount = recordsToTrain.filter((r) => r.recordSource === 'autoplay').length;
+      const followCount = recordsToTrain.length - autoplayCount;
+      const sourceBreakdown = [
+        autoplayCount > 0 ? `${autoplayCount} Autoplay` : '',
+        followCount > 0 ? `${followCount} Follow` : ''
+      ]
+        .filter(Boolean)
+        .join(' + ');
+
+      const evtTitle = `Skill Upgraded · ${targetSkill.name} ${nextVersion}`;
+      onAddResultEvent({
+        title: evtTitle,
+        resultSummary: `Upgraded ${targetSkill.name} (${prevVersion} → ${nextVersion}) using ${recordsToTrain.length} Game Record(s) (${sourceBreakdown}).`,
+        type: 'Skill Upgraded',
+        metricDelta: `Version ${prevVersion} → ${nextVersion} · Updated Just now`,
+        relatedName: targetSkill.name
+      });
+
+      onAddAgentLog(
+        'System',
+        `Upgraded Skill "${targetSkill.name}" to ${nextVersion}`,
+        `Trained on ${recordsToTrain.length} Game Records (${sourceBreakdown})`
+      );
+
+      setIsTraining(false);
+      showToast(evtTitle);
+    }, 400);
+  };
+
+  // Input composer change handler: detects '@' to open '+' attachment menu and filter by shortname
+  const handleInputChangeWithMention = (val: string) => {
+    setInputText(val);
+    const match = val.match(/(?:^|\s)@([a-zA-Z0-9_-]*)$/);
+    if (match) {
+      const q = match[1].toLowerCase();
+      setMentionQuery(q);
+      setAttachMenuOpen(true);
+      setAttachTab('game');
+    } else if (mentionQuery !== null) {
+      setMentionQuery(null);
+    }
+  };
+
+  // Attach item from '+' or '@shortname' and strip trailing '@query' from inputText
+  const handleSelectAttachmentWithMentionCleanup = (att: ChatAttachment) => {
+    handleToggleAttachment(att);
+    if (mentionQuery !== null) {
+      setInputText((prev) => prev.replace(/(?:^|\s)@([a-zA-Z0-9_-]*)$/, ' ').trimStart());
+      setMentionQuery(null);
+      setAttachMenuOpen(false);
+    }
+  };
+
+  // Filtered games for '+' / '@shortname' menu
+  const mentionFilteredGames = games.filter((g) => {
+    if (!mentionQuery) return true;
+    const q = mentionQuery.toLowerCase();
+    const short = getGameShortName(g);
+    return (
+      short.includes(q) ||
+      g.name.toLowerCase().includes(q) ||
+      g.id.toLowerCase().includes(q)
+    );
+  });
+
   // Filtered Game Records by Category ('autoplay' | 'follow') + Game + Status
   const autoplayRecordsCount = behaviorTraces.filter((t) => t.recordSource === 'autoplay').length;
   const followRecordsCount = behaviorTraces.filter(
     (t) => (t.recordSource || 'follow') === 'follow'
   ).length;
+  const untrainedTotalCount = behaviorTraces.filter((t) => !t.trained).length;
 
   const categoryRecords = behaviorTraces.filter(
     (trace) => (trace.recordSource || 'follow') === recordSourceCategory
@@ -777,8 +1006,6 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
     if (recordStatusFilter === 'trained' && !trace.trained) return false;
     return true;
   });
-  const displayedGameRecords =
-    skillsSubView === 'split' ? filteredGameRecords.slice(0, 2) : filteredGameRecords;
 
   return (
     <>
@@ -1104,7 +1331,7 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
             </div>
           )}
 
-          {/* 4-Tab Segmented Switcher: Chat | Events | Skills | Log (Events placed to the left of Skills) */}
+          {/* 4-Tab Segmented Switcher: Chat | Events | Skills | Records */}
           <div className="grid grid-cols-4 gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200/80 text-xs font-bold">
             <button
               type="button"
@@ -1142,20 +1369,24 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
               }`}
             >
               <Zap className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">Skills</span>
+              <span className="truncate">Skills ({userState.agent.perks.length})</span>
             </button>
 
             <button
               type="button"
               onClick={() => onChangeTab('log')}
-              className={`py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer ${
+              className={`relative py-1.5 rounded-lg flex items-center justify-center gap-1 transition-all cursor-pointer ${
                 activeTab === 'log'
                   ? 'bg-white text-indigo-600 shadow-xs'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
+              title="Game Records (Autoplay & Follow training materials)"
             >
-              <Terminal className="w-3.5 h-3.5 shrink-0" />
-              <span className="truncate">Log ({agentLogs.length})</span>
+              <Film className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">Records ({behaviorTraces.length})</span>
+              {untrainedTotalCount > 0 && (
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0" />
+              )}
             </button>
           </div>
         </div>
@@ -1518,450 +1749,500 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
           </div>
         )}
 
-        {/* TAB 3: SKILLS & GAME RECORDS (Skills placed on top + Sub-View Switcher so large Game Records never cover Skills) */}
+        {/* TAB 3: SKILLS (Dedicated & Clean Skill Management: Rename, Download, Share, and Conditional Upgrade via Game Records) */}
         {activeTab === 'evolution' && (
-          <div className="flex-1 flex flex-col min-h-0 bg-slate-50/70">
-            {/* Sticky Sub-Navigation Bar: Prevents large Game Records from pushing or covering Skills */}
-            <div className="px-4 py-2 bg-white border-b border-slate-200/80 flex items-center justify-between gap-2 shrink-0">
-              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-bold">
-                <button
-                  type="button"
-                  onClick={() => setSkillsSubView('split')}
-                  className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
-                    skillsSubView === 'split'
-                      ? 'bg-white text-indigo-600 shadow-2xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Overview
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSkillsSubView('skills')}
-                  className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
-                    skillsSubView === 'skills'
-                      ? 'bg-white text-indigo-600 shadow-2xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Skills ({userState.agent.perks.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSkillsSubView('records')}
-                  className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
-                    skillsSubView === 'records'
-                      ? 'bg-white text-indigo-600 shadow-2xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Game Records ({behaviorTraces.length})
-                </button>
-              </div>
-
-              <span className="text-[11px] font-mono text-slate-400 hidden sm:inline">
-                Auto-upgraded via Autoplay &amp; Follow
-              </span>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {/* SECTION 1 (TOP): Agent Tactical Skills — Placed FIRST so Game Records never cover Skills; no manual Upgrade button */}
-              {(skillsSubView === 'split' || skillsSubView === 'skills') && (
-                <div className="p-4 rounded-2xl bg-white border border-slate-200 space-y-3 shadow-2xs">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <h3 className="text-sm font-black text-slate-900">Agent Tactical Skills</h3>
-                      <p className="text-xs text-slate-500">
-                        Automatically upgraded via Autoplay execution &amp; Follow Game Records training
-                      </p>
-                    </div>
-                    <span className="text-xs font-mono font-bold text-indigo-600 shrink-0">
-                      {userState.agent.perks.length} Skills
-                    </span>
-                  </div>
-
-                  <div className="space-y-2">
-                    {userState.agent.perks.map((skill) => {
-                      const sLv = skill.skillLevel || 1;
-                      const versionLabel = skill.version || `v${sLv}.0`;
-                      const updatedLabel = skill.updatedAt || '2h ago';
-                      return (
-                        <div
-                          key={skill.id}
-                          className="p-3 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-3"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <span className="text-xs font-bold text-slate-900 truncate">
-                                {skill.name}
-                              </span>
-                              <span className="text-[11px] font-mono font-bold text-indigo-600">
-                                Version {versionLabel}
-                              </span>
-                              <span className="text-[11px] text-slate-400" aria-hidden="true">
-                                ·
-                              </span>
-                              <span className="text-[11px] font-mono text-slate-500">
-                                Updated {updatedLabel}
-                              </span>
-                            </div>
-                            <p className="text-xs text-slate-500 mt-0.5 line-clamp-1">
-                              {skill.description}
-                            </p>
-                          </div>
-
-                          {skill.metricLabel && (
-                            <span className="text-[11px] font-mono font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200 shrink-0">
-                              {skill.metricLabel}
-                            </span>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {/* SECTION 2 (BOTTOM OR DEDICATED VIEW): Game Records — Split into 2 Categories: Autoplay | Follow */}
-              {(skillsSubView === 'split' || skillsSubView === 'records') && (
-                <div className="p-4 rounded-2xl bg-white border border-slate-200 space-y-3 shadow-2xs">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h3 className="text-sm font-black text-slate-900">Game Records</h3>
-                        <span className="text-xs font-mono font-bold text-indigo-600">
-                          ({filteredGameRecords.length})
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        Select {recordSourceCategory === 'autoplay' ? 'Autoplay' : 'Follow'} records to train AI &amp; upgrade Skill versions
-                      </p>
-                    </div>
-
-                    {/* 2-Category Switcher on the right: Autoplay | Follow */}
-                    <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200/80 text-xs font-bold shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => setRecordSourceCategory('autoplay')}
-                        className={`px-2.5 py-1 rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
-                          recordSourceCategory === 'autoplay'
-                            ? 'bg-slate-950 text-white shadow-2xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        <Bot className="w-3 h-3 shrink-0" />
-                        <span>Autoplay ({autoplayRecordsCount})</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setRecordSourceCategory('follow')}
-                        className={`px-2.5 py-1 rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
-                          recordSourceCategory === 'follow'
-                            ? 'bg-slate-950 text-white shadow-2xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        <Radio className="w-3 h-3 shrink-0" />
-                        <span>Follow ({followRecordsCount})</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Filter Bar for large Game Records datasets (Game filter + Untrained/Trained filter) */}
-                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-100">
-                    <div className="flex items-center gap-1.5">
-                      <select
-                        value={recordGameFilter}
-                        onChange={(e) => setRecordGameFilter(e.target.value)}
-                        className="bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg px-2 py-1 border border-slate-200 focus:outline-none"
-                      >
-                        <option value="all">All Games ({categoryRecords.length})</option>
-                        {uniqueRecordGames.map((g) => (
-                          <option key={g.id} value={g.id}>
-                            {g.emoji} {g.name}
-                          </option>
-                        ))}
-                      </select>
-
-                      <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[11px] font-bold">
-                        {(['all', 'untrained', 'trained'] as const).map((status) => (
-                          <button
-                            key={status}
-                            type="button"
-                            onClick={() => setRecordStatusFilter(status)}
-                            className={`px-2 py-0.5 rounded-md capitalize transition-colors cursor-pointer ${
-                              recordStatusFilter === status
-                                ? 'bg-white text-slate-900 shadow-2xs'
-                                : 'text-slate-500 hover:text-slate-800'
-                            }`}
-                          >
-                            {status}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const untrainedIds = filteredGameRecords
-                          .filter((r) => !r.trained)
-                          .map((r) => r.id);
-                        if (untrainedIds.length > 0) {
-                          setSelectedTraceIds(untrainedIds);
-                        } else {
-                          setSelectedTraceIds(filteredGameRecords.map((r) => r.id));
-                        }
-                      }}
-                      className="text-[11px] font-bold text-indigo-600 hover:text-indigo-700 cursor-pointer"
-                    >
-                      Select Untrained
-                    </button>
-                  </div>
-
-                  {/* Game Records List (Compact 2-item preview in Split View so Skills are never covered; full scroll in Game Records View) */}
-                  <div
-                    className={`space-y-2 pr-0.5 ${
-                      skillsSubView === 'split'
-                        ? 'max-h-48 overflow-y-auto'
-                        : 'max-h-[380px] overflow-y-auto'
-                    }`}
-                  >
-                    {displayedGameRecords.map((trace) => {
-                      const isSelected = selectedTraceIds.includes(trace.id);
-                      return (
-                        <div
-                          key={trace.id}
-                          onClick={() => handleToggleSelectTrace(trace.id)}
-                          className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
-                            isSelected
-                              ? 'bg-indigo-50/50 border-indigo-400 shadow-2xs'
-                              : 'bg-slate-50/70 hover:bg-slate-100/70 border-slate-200'
-                          }`}
-                        >
-                          <div className="flex items-start gap-2.5">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleToggleSelectTrace(trace.id);
-                              }}
-                              className="mt-0.5 text-indigo-600 shrink-0"
-                            >
-                              {isSelected ? (
-                                <CheckSquare className="w-4 h-4 text-indigo-600" />
-                              ) : (
-                                <Square className="w-4 h-4 text-slate-400" />
-                              )}
-                            </button>
-
-                            {/* Captured Game Interface Screenshot Thumbnail */}
-                            <img
-                              src={trace.screenshotUrl}
-                              alt={trace.title}
-                              className="w-16 h-11 rounded-lg object-cover border border-slate-700 bg-slate-950 shrink-0"
-                            />
-
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="text-xs font-bold text-slate-900 truncate">
-                                  {trace.gameEmoji} {trace.title}
-                                </span>
-                                {trace.trained ? (
-                                  <span className="text-[11px] font-mono font-bold text-emerald-600 shrink-0">
-                                    Trained ✓
-                                  </span>
-                                ) : (
-                                  <span className="text-[11px] font-mono font-bold text-amber-600 shrink-0">
-                                    New
-                                  </span>
-                                )}
-                              </div>
-
-                              <p className="text-xs text-slate-600 mt-0.5 truncate font-mono">
-                                {trace.operationData.keystrokes}
-                              </p>
-
-                              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 font-mono">
-                                <span className="text-indigo-600 font-bold uppercase">
-                                  [{trace.recordSource || 'follow'}]
-                                </span>
-                                <span aria-hidden="true">·</span>
-                                <span>{trace.operationData.apm} APM</span>
-                                <span aria-hidden="true">·</span>
-                                <span>{trace.operationData.reactionMs}ms</span>
-                                <span aria-hidden="true">·</span>
-                                <span>{trace.framesCount} frames</span>
-                                <span aria-hidden="true">·</span>
-                                <span>{trace.recordedAt}</span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {skillsSubView === 'split' && filteredGameRecords.length > 2 && (
-                    <button
-                      type="button"
-                      onClick={() => setSkillsSubView('records')}
-                      className="w-full py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-700 transition-colors cursor-pointer"
-                    >
-                      + {filteredGameRecords.length - 2} more {recordSourceCategory === 'autoplay' ? 'Autoplay' : 'Follow'} Records · Click to expand all
-                    </button>
-                  )}
-
-                  {/* Selected Games Summary & Multi-Game Simultaneous Training Notice */}
-                  {distinctSelectedGames.length > 0 && (
-                    <div
-                      className={`p-2.5 rounded-xl border text-xs transition-all ${
-                        distinctSelectedGames.length > 1
-                          ? 'bg-amber-50/80 border-amber-300 text-amber-900'
-                          : 'bg-slate-50 border-slate-200 text-slate-700'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2 mb-1.5">
-                        <span className="font-bold flex items-center gap-1.5">
-                          <Gamepad2 className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
-                          {distinctSelectedGames.length > 1
-                            ? `Multi-Game Selected (${distinctSelectedGames.length} Games · ${selectedDemos.length} Records)`
-                            : `Single Game Selected (${distinctSelectedGames[0].name})`}
-                        </span>
-                        {distinctSelectedGames.length > 1 && (
-                          <span className="text-[11px] font-mono font-bold text-amber-700">
-                            Cross-Game Check
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        {distinctSelectedGames.map((g) => (
-                          <span
-                            key={g.id}
-                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white border border-slate-200 text-[11px] font-semibold text-slate-800"
-                          >
-                            <span>{g.emoji}</span>
-                            <span>{g.name}</span>
-                            <span className="font-mono text-indigo-600">×{g.count}</span>
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={handleTrainSelectedDemos}
-                    disabled={isTraining || selectedTraceIds.length === 0}
-                    className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm transition-all active:scale-95 cursor-pointer"
-                  >
-                    <Zap className="w-4 h-4 text-amber-300 fill-current" />
-                    <span>
-                      {isTraining
-                        ? 'Training Records & Upgrading Skill Version...'
-                        : distinctSelectedGames.length > 1
-                        ? `Train Selected Records (${selectedDemos.length} across ${distinctSelectedGames.length} Games)`
-                        : `Train Selected Records to Upgrade Skills (${selectedDemos.length})`}
-                    </span>
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* TAB 2: EVENTS (Strictly displays outcome results: e.g., AI trained record, upgraded skill) */}
-        {activeTab === 'achievements' && (
           <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/70">
             <div className="flex items-center justify-between px-1">
               <div>
-                <h3 className="text-sm font-black text-slate-900">Result Events</h3>
+                <h3 className="text-sm font-black text-slate-900">Agent Tactical Skills</h3>
                 <p className="text-xs text-slate-500">
-                  Outcome milestones from Autoplay &amp; Follow Game Records Skill Upgrades
+                  Customize skill names, download or share packages, or upgrade when Game Records are available
                 </p>
               </div>
-              <span className="text-xs font-mono font-bold text-indigo-600">
-                {resultEvents.length} Results
-              </span>
+              <button
+                type="button"
+                onClick={() => onChangeTab('log')}
+                className="text-xs font-bold text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100/80 px-2.5 py-1 rounded-xl border border-indigo-200/80 transition-colors shrink-0 cursor-pointer"
+              >
+                Records ({behaviorTraces.length}) →
+              </button>
             </div>
 
             <div className="space-y-2.5">
-              {resultEvents.map((evt) => (
-                <div
-                  key={evt.id}
-                  className="p-3.5 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-1.5"
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
-                      <h4 className="text-xs font-bold text-slate-900 truncate">{evt.title}</h4>
+              {userState.agent.perks.map((skill) => {
+                const sLv = skill.skillLevel || 1;
+                const versionLabel = skill.version || `v${sLv}.0`;
+                const updatedLabel = skill.updatedAt || '2h ago';
+                const assocGame = getSkillAssociatedGame(skill.id, skill.gameId);
+                const associatedRecords = behaviorTraces.filter(
+                  (r) => r.gameId === assocGame.id
+                );
+                const untrainedRecordsCount = associatedRecords.filter((r) => !r.trained).length;
+                const isEditing = editingSkillId === skill.id;
+
+                return (
+                  <div
+                    key={skill.id}
+                    className="p-3.5 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-2.5 transition-all hover:border-slate-300"
+                  >
+                    {/* Top Row: Skill Name (Inline Editable) + Version + Actions (Rename, Download, Share) */}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        {isEditing ? (
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              value={editingSkillName}
+                              onChange={(e) => setEditingSkillName(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleSaveSkillName(skill.id);
+                                if (e.key === 'Escape') setEditingSkillId(null);
+                              }}
+                              autoFocus
+                              className="px-2.5 py-1 text-xs font-bold text-slate-900 bg-slate-50 border border-indigo-400 rounded-lg focus:outline-none flex-1 min-w-0"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleSaveSkillName(skill.id)}
+                              className="p-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition-colors cursor-pointer shrink-0"
+                              title="Save Skill Name"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingSkillId(null)}
+                              className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors cursor-pointer shrink-0"
+                              title="Cancel"
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-xs font-black text-slate-900 truncate">
+                              {skill.name}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingSkillId(skill.id);
+                                setEditingSkillName(skill.name);
+                              }}
+                              className="p-1 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors cursor-pointer"
+                              title="Customize Skill Name"
+                            >
+                              <Edit2 className="w-3 h-3" />
+                            </button>
+                            <span className="px-1.5 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200/80 text-[10px] font-mono font-bold">
+                              {versionLabel}
+                            </span>
+                            <span className="text-[11px] font-mono text-slate-400">
+                              · {updatedLabel}
+                            </span>
+                          </div>
+                        )}
+
+                        <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                          {skill.description}
+                        </p>
+                      </div>
+
+                      {/* Skill Actions: Download & Share */}
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadSkill(skill)}
+                          className="p-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
+                          title="Download Skill (.skill.json)"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSharingSkillId(skill.id)}
+                          className="p-1.5 rounded-xl bg-slate-100 hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 transition-colors cursor-pointer"
+                          title="Share Skill"
+                        >
+                          <Share2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
-                    <span className="text-[11px] font-mono text-slate-400 shrink-0">
-                      {evt.timestamp}
-                    </span>
-                  </div>
 
-                  <p className="text-xs text-slate-600 leading-relaxed">{evt.resultSummary}</p>
+                    {/* Bottom Row: Associated Game + Metric Badge + Conditional Upgrade Button */}
+                    <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-slate-100 text-slate-700 text-[11px] font-semibold">
+                          <span>{assocGame.emoji}</span>
+                          <span>{assocGame.name}</span>
+                          <span className="font-mono text-[10px] text-slate-400">
+                            @{assocGame.shortName}
+                          </span>
+                        </span>
 
-                  <div className="pt-1 flex items-center gap-1.5 text-xs font-mono text-slate-500">
-                    <span className="text-indigo-600 font-bold">{evt.type}</span>
-                    <span aria-hidden="true">·</span>
-                    <span className="text-emerald-600 font-bold">{evt.metricDelta}</span>
+                        {skill.metricLabel && (
+                          <span className="text-[11px] font-mono font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-lg border border-emerald-200">
+                            {skill.metricLabel}
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Conditional Upgrade Button: Shown when the associated game has training records */}
+                      {associatedRecords.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenSkillUpgradeModal(skill)}
+                          disabled={isTraining}
+                          className={`px-2.5 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shrink-0 ${
+                            untrainedRecordsCount > 0
+                              ? 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-2xs'
+                              : 'bg-slate-900 hover:bg-indigo-600 text-white'
+                          }`}
+                          title="Select Autoplay & Follow Game Records to upgrade this Skill"
+                        >
+                          <Zap className="w-3 h-3 text-amber-300 fill-current" />
+                          <span>Upgrade</span>
+                          {untrainedRecordsCount > 0 && (
+                            <span className="px-1.5 py-0.2 rounded-full bg-amber-300 text-slate-950 font-mono text-[10px] font-black">
+                              {untrainedRecordsCount} new
+                            </span>
+                          )}
+                        </button>
+                      )}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}
 
-        {/* TAB 4: LOG (All non-dialogue and non-result-event runtime telemetry) */}
-        {activeTab === 'log' && (
-          <div className="flex-1 overflow-y-auto p-4 space-y-2.5 bg-slate-950 text-slate-200 font-mono text-xs">
-            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
-              <span className="font-bold text-slate-100 flex items-center gap-1.5">
-                <Terminal className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Agent Runtime Telemetry Log</span>
-              </span>
-              <span className="text-[11px] text-slate-400">{agentLogs.length} entries</span>
+        {/* TAB 2: EVENTS (Switches between Result Events list and Raw Logs list when Raw Logs is clicked) */}
+        {activeTab === 'achievements' && (
+          <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/70">
+            <div className="flex items-center justify-between gap-2 px-1">
+              <div>
+                <h3 className="text-sm font-black text-slate-900">
+                  {showRawLogsInEvents ? 'Agent Runtime Logs' : 'Result Events'}
+                </h3>
+                <p className="text-xs text-slate-500">
+                  {showRawLogsInEvents
+                    ? 'Real-time Copilot, Autoplay & Follow execution logs'
+                    : 'Outcome milestones from Autoplay & Follow Skill Upgrades'}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowRawLogsInEvents((prev) => !prev)}
+                className={`px-2.5 py-1 rounded-xl text-xs font-mono font-bold flex items-center gap-1.5 border transition-colors cursor-pointer shrink-0 ${
+                  showRawLogsInEvents
+                    ? 'bg-slate-950 text-emerald-400 border-slate-900'
+                    : 'bg-white text-slate-600 hover:text-slate-900 border-slate-200'
+                }`}
+                title={showRawLogsInEvents ? 'Switch back to Result Events' : 'View Raw Logs only'}
+              >
+                <Terminal className="w-3.5 h-3.5" />
+                <span>Raw Logs ({agentLogs.length})</span>
+              </button>
             </div>
 
-            <div className="space-y-2">
-              {agentLogs.map((entry) => (
-                <div
-                  key={entry.id}
-                  className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1"
+            {showRawLogsInEvents ? (
+              <div className="p-3 rounded-2xl bg-slate-950 text-slate-200 font-mono text-xs space-y-2 border border-slate-800 animate-in fade-in duration-150">
+                {agentLogs.map((entry) => (
+                  <div
+                    key={entry.id}
+                    className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800/90 space-y-1"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-[11px]">
+                      <span
+                        className={`font-bold ${
+                          entry.source === 'Copilot' ||
+                          entry.source === 'Autoplay' ||
+                          entry.source === 'Auto-Pilot'
+                            ? 'text-emerald-400'
+                            : entry.source === 'Follow'
+                            ? 'text-rose-400'
+                            : entry.source === 'GameAPI'
+                            ? 'text-cyan-400'
+                            : 'text-indigo-400'
+                        }`}
+                      >
+                        [{entry.source}]
+                      </span>
+                      <span className="text-slate-500">{entry.timestamp}</span>
+                    </div>
+                    <div className="text-slate-200 text-xs leading-snug">{entry.message}</div>
+                    {entry.detail && (
+                      <div className="text-[11px] text-slate-400 truncate">{entry.detail}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {resultEvents.map((evt) => (
+                  <div
+                    key={evt.id}
+                    className="p-3.5 rounded-2xl bg-white border border-slate-200/90 shadow-2xs space-y-1.5"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0" />
+                        <h4 className="text-xs font-bold text-slate-900 truncate">{evt.title}</h4>
+                      </div>
+                      <span className="text-[11px] font-mono text-slate-400 shrink-0">
+                        {evt.timestamp}
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-slate-600 leading-relaxed">{evt.resultSummary}</p>
+
+                    <div className="pt-1 flex items-center gap-1.5 text-xs font-mono text-slate-500">
+                      <span className="text-indigo-600 font-bold">{evt.type}</span>
+                      <span aria-hidden="true">·</span>
+                      <span className="text-emerald-600 font-bold">{evt.metricDelta}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* TAB 4: RECORDS (Dedicated Game Records Tab for Autoplay & Follow Training Materials) */}
+        {activeTab === 'log' && (
+          <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/70">
+            <div className="p-4 rounded-2xl bg-white border border-slate-200 space-y-3 shadow-2xs">
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-black text-slate-900">Game Records</h3>
+                    <span className="text-xs font-mono font-bold text-indigo-600">
+                      ({filteredGameRecords.length})
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Autoplay &amp; Follow training materials for upgrading Agent Skills
+                  </p>
+                </div>
+
+                {/* 2-Category Switcher: Autoplay | Follow */}
+                <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200/80 text-xs font-bold shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setRecordSourceCategory('autoplay')}
+                    className={`px-2.5 py-1 rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
+                      recordSourceCategory === 'autoplay'
+                        ? 'bg-slate-950 text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Bot className="w-3 h-3 shrink-0" />
+                    <span>Autoplay ({autoplayRecordsCount})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecordSourceCategory('follow')}
+                    className={`px-2.5 py-1 rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
+                      recordSourceCategory === 'follow'
+                        ? 'bg-slate-950 text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <Radio className="w-3 h-3 shrink-0" />
+                    <span>Follow ({followRecordsCount})</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Filter Bar (Game filter + Untrained/Trained filter) */}
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+                <div className="flex items-center gap-1.5">
+                  <select
+                    value={recordGameFilter}
+                    onChange={(e) => setRecordGameFilter(e.target.value)}
+                    className="bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg px-2 py-1 border border-slate-200 focus:outline-none"
+                  >
+                    <option value="all">All Games ({categoryRecords.length})</option>
+                    {uniqueRecordGames.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.emoji} {g.name}
+                      </option>
+                    ))}
+                  </select>
+
+                  <div className="flex items-center bg-slate-100 p-0.5 rounded-lg border border-slate-200 text-[11px] font-bold">
+                    {(['all', 'untrained', 'trained'] as const).map((status) => (
+                      <button
+                        key={status}
+                        type="button"
+                        onClick={() => setRecordStatusFilter(status)}
+                        className={`px-2 py-0.5 rounded-md capitalize transition-colors cursor-pointer ${
+                          recordStatusFilter === status
+                            ? 'bg-white text-slate-900 shadow-2xs'
+                            : 'text-slate-500 hover:text-slate-800'
+                        }`}
+                      >
+                        {status}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const untrainedIds = filteredGameRecords
+                      .filter((r) => !r.trained)
+                      .map((r) => r.id);
+                    if (untrainedIds.length > 0) {
+                      setSelectedTraceIds(untrainedIds);
+                    } else {
+                      setSelectedTraceIds(filteredGameRecords.map((r) => r.id));
+                    }
+                  }}
+                  className="text-[11px] font-bold text-indigo-600 hover:text-indigo-700 cursor-pointer"
                 >
-                  <div className="flex items-center justify-between gap-2 text-[11px]">
-                    <span
-                      className={`font-bold ${
-                        entry.source === 'Copilot' ||
-                        entry.source === 'Autoplay' ||
-                        entry.source === 'Auto-Pilot'
-                          ? 'text-emerald-400'
-                          : entry.source === 'Follow'
-                          ? 'text-rose-400'
-                          : entry.source === 'GameAPI'
-                          ? 'text-cyan-400'
-                          : 'text-indigo-400'
+                  Select Untrained
+                </button>
+              </div>
+
+              {/* Full Game Records List */}
+              <div className="space-y-2 max-h-[380px] overflow-y-auto pr-0.5">
+                {filteredGameRecords.map((trace) => {
+                  const isSelected = selectedTraceIds.includes(trace.id);
+                  return (
+                    <div
+                      key={trace.id}
+                      onClick={() => handleToggleSelectTrace(trace.id)}
+                      className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
+                        isSelected
+                          ? 'bg-indigo-50/50 border-indigo-400 shadow-2xs'
+                          : 'bg-slate-50/70 hover:bg-slate-100/70 border-slate-200'
                       }`}
                     >
-                      [{entry.source}]
+                      <div className="flex items-start gap-2.5">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleToggleSelectTrace(trace.id);
+                          }}
+                          className="mt-0.5 text-indigo-600 shrink-0"
+                        >
+                          {isSelected ? (
+                            <CheckSquare className="w-4 h-4 text-indigo-600" />
+                          ) : (
+                            <Square className="w-4 h-4 text-slate-400" />
+                          )}
+                        </button>
+
+                        <img
+                          src={trace.screenshotUrl}
+                          alt={trace.title}
+                          className="w-16 h-11 rounded-lg object-cover border border-slate-700 bg-slate-950 shrink-0"
+                        />
+
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-bold text-slate-900 truncate">
+                              {trace.gameEmoji} {trace.title}
+                            </span>
+                            {trace.trained ? (
+                              <span className="text-[11px] font-mono font-bold text-emerald-600 shrink-0">
+                                Trained ✓
+                              </span>
+                            ) : (
+                              <span className="text-[11px] font-mono font-bold text-amber-600 shrink-0">
+                                Untrained
+                              </span>
+                            )}
+                          </div>
+
+                          <p className="text-xs text-slate-600 mt-0.5 truncate font-mono">
+                            {trace.operationData.keystrokes}
+                          </p>
+
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 font-mono">
+                            <span className="text-indigo-600 font-bold uppercase">
+                              [{trace.recordSource || 'follow'}]
+                            </span>
+                            <span aria-hidden="true">·</span>
+                            <span>{trace.operationData.apm} APM</span>
+                            <span aria-hidden="true">·</span>
+                            <span>{trace.operationData.reactionMs}ms</span>
+                            <span aria-hidden="true">·</span>
+                            <span>{trace.framesCount} frames</span>
+                            <span aria-hidden="true">·</span>
+                            <span>{trace.recordedAt}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Selected Games Summary & Multi-Game Simultaneous Training Notice */}
+              {distinctSelectedGames.length > 0 && (
+                <div
+                  className={`p-2.5 rounded-xl border text-xs transition-all ${
+                    distinctSelectedGames.length > 1
+                      ? 'bg-amber-50/80 border-amber-300 text-amber-900'
+                      : 'bg-slate-50 border-slate-200 text-slate-700'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <span className="font-bold flex items-center gap-1.5">
+                      <Gamepad2 className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+                      {distinctSelectedGames.length > 1
+                        ? `Multi-Game Selected (${distinctSelectedGames.length} Games · ${selectedDemos.length} Records)`
+                        : `Single Game Selected (${distinctSelectedGames[0].name})`}
                     </span>
-                    <span className="text-slate-500">{entry.timestamp}</span>
+                    {distinctSelectedGames.length > 1 && (
+                      <span className="text-[11px] font-mono font-bold text-amber-700">
+                        Cross-Game Check
+                      </span>
+                    )}
                   </div>
-                  <div className="text-slate-200 leading-snug">{entry.message}</div>
-                  {entry.detail && (
-                    <div className="text-[11px] text-slate-400 truncate">{entry.detail}</div>
-                  )}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {distinctSelectedGames.map((g) => (
+                      <span
+                        key={g.id}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-white border border-slate-200 text-[11px] font-semibold text-slate-800"
+                      >
+                        <span>{g.emoji}</span>
+                        <span>{g.name}</span>
+                        <span className="font-mono text-indigo-600">×{g.count}</span>
+                      </span>
+                    ))}
+                  </div>
                 </div>
-              ))}
+              )}
+
+              <button
+                type="button"
+                onClick={handleTrainSelectedDemos}
+                disabled={isTraining || selectedTraceIds.length === 0}
+                className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow-sm transition-all active:scale-95 cursor-pointer"
+              >
+                <Zap className="w-4 h-4 text-amber-300 fill-current" />
+                <span>
+                  {isTraining
+                    ? 'Training Records & Upgrading Skill Version...'
+                    : distinctSelectedGames.length > 1
+                    ? `Train Selected Records (${selectedDemos.length} across ${distinctSelectedGames.length} Games)`
+                    : `Train Selected Records to Upgrade Skills (${selectedDemos.length})`}
+                </span>
+              </button>
             </div>
           </div>
         )}
 
-        {/* 3. BOTTOM INPUT DOCK WITH '+' ATTACHMENT MENU TO THE LEFT OF MICROPHONE ICON */}
+        {/* 3. BOTTOM INPUT DOCK WITH '+' ATTACHMENT MENU & '@SHORTNAME' QUICK-LINK */}
         <div className="px-4 py-3 bg-white border-t border-slate-200 shrink-0 relative">
-          {/* Popover Menu for '+' Button: Link Game | Link Skill | Link Game Record */}
+          {/* Popover Menu for '+' Button or '@' Trigger: Link Game (by shortname) | Link Skill | Link Game Record */}
           {attachMenuOpen && (
             <div className="absolute left-3 right-3 bottom-full mb-2 z-30 bg-white border border-slate-200 rounded-2xl shadow-xl p-3 space-y-2.5 animate-in fade-in duration-150">
               <div className="flex items-center justify-between border-b border-slate-100 pb-2">
@@ -1976,7 +2257,9 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
                     }`}
                   >
                     <Gamepad2 className="w-3.5 h-3.5" />
-                    <span>Game</span>
+                    <span>
+                      Game {mentionQuery ? `(@${mentionQuery})` : ''}
+                    </span>
                   </button>
                   <button
                     type="button"
@@ -2006,50 +2289,72 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => setAttachMenuOpen(false)}
+                  onClick={() => {
+                    setAttachMenuOpen(false);
+                    setMentionQuery(null);
+                  }}
                   className="p-1 rounded-lg text-slate-400 hover:text-slate-700"
                 >
                   <X className="w-4 h-4" />
                 </button>
               </div>
 
-              {/* Tab 1: Associate Game */}
+              {/* Tab 1: Associate Game (Supports @shortname quick filter) */}
               {attachTab === 'game' && (
                 <div className="max-h-44 overflow-y-auto space-y-1 pr-0.5">
-                  {games.slice(0, 8).map((g) => {
-                    const isLinked = pendingAttachments.some(
-                      (a) => a.type === 'game' && a.id === g.id
-                    );
-                    return (
-                      <button
-                        key={g.id}
-                        type="button"
-                        onClick={() =>
-                          handleToggleAttachment({
-                            id: g.id,
-                            type: 'game',
-                            name: g.name,
-                            subtitle: g.category,
-                            emoji: g.emoji
-                          })
-                        }
-                        className={`w-full px-3 py-2 rounded-xl text-left text-xs flex items-center justify-between gap-2 transition-colors cursor-pointer ${
-                          isLinked
-                            ? 'bg-indigo-50 text-indigo-700 font-bold border border-indigo-200'
-                            : 'hover:bg-slate-100 text-slate-800'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span>{g.emoji}</span>
-                          <span className="truncate">{g.name}</span>
-                          <span className="text-[10px] font-mono text-slate-400">
-                            · {g.category}
-                          </span>
-                        </div>
-                        {isLinked && <Check className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
-                      </button>
-                    );
-                  })}
+                  {mentionQuery !== null && (
+                    <div className="px-2 py-1 text-[11px] font-mono text-indigo-600 bg-indigo-50/70 rounded-lg flex items-center justify-between">
+                      <span>
+                        Filtering by shortname: <strong>@{mentionQuery || '...'}</strong>
+                      </span>
+                      <span className="text-[10px] text-slate-400">Enter / Click to link</span>
+                    </div>
+                  )}
+                  {mentionFilteredGames.length === 0 ? (
+                    <div className="py-4 text-center text-xs text-slate-400">
+                      No games matching "@{mentionQuery}"
+                    </div>
+                  ) : (
+                    mentionFilteredGames.slice(0, 8).map((g, idx) => {
+                      const isLinked = pendingAttachments.some(
+                        (a) => a.type === 'game' && a.id === g.id
+                      );
+                      const shortName = getGameShortName(g);
+                      return (
+                        <button
+                          key={g.id}
+                          type="button"
+                          onClick={() =>
+                            handleSelectAttachmentWithMentionCleanup({
+                              id: g.id,
+                              type: 'game',
+                              name: g.name,
+                              subtitle: `@${shortName} · ${g.category}`,
+                              emoji: g.emoji,
+                              gameId: g.id,
+                              gameName: g.name
+                            })
+                          }
+                          className={`w-full px-3 py-2 rounded-xl text-left text-xs flex items-center justify-between gap-2 transition-colors cursor-pointer ${
+                            isLinked
+                              ? 'bg-indigo-50 text-indigo-700 font-bold border border-indigo-200'
+                              : mentionQuery !== null && idx === 0
+                              ? 'bg-slate-100 text-slate-900 font-semibold'
+                              : 'hover:bg-slate-100 text-slate-800'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span>{g.emoji}</span>
+                            <span className="truncate font-bold">{g.name}</span>
+                            <span className="px-1.5 py-0.5 rounded bg-slate-200/70 text-slate-700 font-mono text-[10px]">
+                              @{shortName}
+                            </span>
+                          </div>
+                          {isLinked && <Check className="w-3.5 h-3.5 text-indigo-600 shrink-0" />}
+                        </button>
+                      );
+                    })
+                  )}
                 </div>
               )}
 
@@ -2067,7 +2372,7 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
                         key={sk.id}
                         type="button"
                         onClick={() =>
-                          handleToggleAttachment({
+                          handleSelectAttachmentWithMentionCleanup({
                             id: sk.id,
                             type: 'skill',
                             name: `${sk.name} (${skVersion})`,
@@ -2107,7 +2412,7 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
                         key={demo.id}
                         type="button"
                         onClick={() =>
-                          handleToggleAttachment({
+                          handleSelectAttachmentWithMentionCleanup({
                             id: demo.id,
                             type: 'demo',
                             name: demo.title,
@@ -2171,27 +2476,52 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
           )}
 
           {/* Reference 2-Row Composer Layout:
-              Row 1: Full-width Input ("Chat with <Agent Name>")
+              Row 1: Full-width Input ("Chat with <Agent Name>" · Type @shortname to link game)
               Row 2: Left: [+] + [Model] | Right: [Mic] [ArrowUp] */}
           <div className="rounded-2xl bg-[#F3F4F6]/90 border border-slate-200/80 focus-within:border-slate-300 focus-within:bg-[#F3F4F6] px-3.5 pt-3 pb-2.5 transition-all">
             {/* Top Row: Text Input */}
             <input
               type="text"
               value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
+              onChange={(e) => handleInputChangeWithMention(e.target.value)}
               onKeyDown={(e) => {
+                if (
+                  (e.key === 'Enter' || e.key === 'Tab') &&
+                  mentionQuery !== null &&
+                  attachMenuOpen &&
+                  attachTab === 'game' &&
+                  mentionFilteredGames.length > 0
+                ) {
+                  e.preventDefault();
+                  const topGame = mentionFilteredGames[0];
+                  const shortName = getGameShortName(topGame);
+                  handleSelectAttachmentWithMentionCleanup({
+                    id: topGame.id,
+                    type: 'game',
+                    name: topGame.name,
+                    subtitle: `@${shortName} · ${topGame.category}`,
+                    emoji: topGame.emoji,
+                    gameId: topGame.id,
+                    gameName: topGame.name
+                  });
+                  return;
+                }
                 if (e.key === 'Enter') {
                   e.preventDefault();
                   handleSend();
                 }
               }}
-              placeholder={isRecording ? 'Listening to speech...' : `Chat with ${userState.agent.name}`}
+              placeholder={
+                isRecording
+                  ? 'Listening to speech...'
+                  : `Chat with ${userState.agent.name} (type @ to link game)`
+              }
               className="w-full bg-transparent text-sm text-slate-900 placeholder-slate-400 focus:outline-none"
             />
 
             {/* Bottom Row: Toolbar Controls */}
             <div className="mt-3 flex items-center justify-between gap-2">
-              {/* Left Controls: [+] (without Agent beside it) + Model + Effort Pill */}
+              {/* Left Controls: [+] (without Agent beside it) + Model */}
               <div className="flex items-center gap-2.5 min-w-0">
                 {/* '+' Attachment Button */}
                 <button
@@ -2202,7 +2532,7 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
                       ? 'bg-slate-900 text-white'
                       : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/70'
                   }`}
-                  title="Attach Game, Skill, or Game Record"
+                  title="Attach Game (@shortname), Skill, or Game Record"
                 >
                   <Plus className="w-4 h-4 stroke-[1.75]" />
                 </button>
@@ -2411,7 +2741,247 @@ export const HumanoidAgent: React.FC<HumanoidAgentProps> = ({
           </div>
         )}
 
-        {/* In-Agent Modal C: 3D Avatar & Name Customization Panel (Inside #agent-console) */}
+        {/* In-Agent Modal C: Skill Upgrade Selector (Select Autoplay & Follow Game Records, Untrained pre-selected by default) */}
+        {upgradingSkillId && (() => {
+          const targetSkill = userState.agent.perks.find((p) => p.id === upgradingSkillId);
+          if (!targetSkill) return null;
+          const assocGame = getSkillAssociatedGame(targetSkill.id, targetSkill.gameId);
+          const gameRecords = behaviorTraces.filter((r) => r.gameId === assocGame.id);
+          const currentVersion = targetSkill.version || `v${targetSkill.skillLevel || 1}.0`;
+          const nextVersion = bumpVersionString(currentVersion, targetSkill.skillLevel || 1);
+
+          return (
+            <div className="absolute inset-0 z-40 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+              <div className="w-full max-w-sm rounded-2xl bg-white border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[90%]">
+                <div className="px-4 py-3 bg-slate-900 text-white flex items-center justify-between gap-2 shrink-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-7 h-7 rounded-xl bg-indigo-600 text-white flex items-center justify-center shrink-0">
+                      <Zap className="w-4 h-4 text-amber-300 fill-current" />
+                    </div>
+                    <div className="min-w-0">
+                      <h4 className="text-xs font-black text-white truncate">
+                        Upgrade Skill · {targetSkill.name}
+                      </h4>
+                      <p className="text-[11px] text-slate-300 truncate">
+                        {assocGame.emoji} {assocGame.name} · {currentVersion} → {nextVersion}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setUpgradingSkillId(null)}
+                    className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="p-4 space-y-3 overflow-y-auto flex-1 text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-slate-600 font-semibold">
+                      Select Game Records (Untrained pre-selected):
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const untrained = gameRecords.filter((r) => !r.trained).map((r) => r.id);
+                          setUpgradeSelectedRecordIds(untrained);
+                        }}
+                        className="text-[11px] font-bold text-indigo-600 hover:text-indigo-700 cursor-pointer"
+                      >
+                        Untrained Only
+                      </button>
+                      <span className="text-slate-300">·</span>
+                      <button
+                        type="button"
+                        onClick={() => setUpgradeSelectedRecordIds(gameRecords.map((r) => r.id))}
+                        className="text-[11px] font-bold text-slate-500 hover:text-slate-800 cursor-pointer"
+                      >
+                        All ({gameRecords.length})
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 max-h-60 overflow-y-auto pr-0.5">
+                    {gameRecords.map((rec) => {
+                      const isChecked = upgradeSelectedRecordIds.includes(rec.id);
+                      return (
+                        <div
+                          key={rec.id}
+                          onClick={() => {
+                            setUpgradeSelectedRecordIds((prev) =>
+                              prev.includes(rec.id)
+                                ? prev.filter((id) => id !== rec.id)
+                                : [...prev, rec.id]
+                            );
+                          }}
+                          className={`p-2.5 rounded-xl border flex items-start gap-2.5 transition-all cursor-pointer ${
+                            isChecked
+                              ? 'bg-indigo-50/60 border-indigo-400 shadow-2xs'
+                              : 'bg-slate-50 hover:bg-slate-100 border-slate-200'
+                          }`}
+                        >
+                          <div className="mt-0.5 text-indigo-600 shrink-0">
+                            {isChecked ? (
+                              <CheckSquare className="w-4 h-4 text-indigo-600" />
+                            ) : (
+                              <Square className="w-4 h-4 text-slate-400" />
+                            )}
+                          </div>
+                          <img
+                            src={rec.screenshotUrl}
+                            alt={rec.title}
+                            className="w-14 h-10 rounded-lg object-cover bg-slate-950 border border-slate-700 shrink-0"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center justify-between gap-1.5">
+                              <span className="font-bold text-slate-900 truncate">
+                                {rec.title}
+                              </span>
+                              <span
+                                className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded shrink-0 ${
+                                  rec.trained
+                                    ? 'bg-emerald-50 text-emerald-700'
+                                    : 'bg-amber-100 text-amber-800'
+                                }`}
+                              >
+                                {rec.trained ? 'Trained' : 'Untrained'}
+                              </span>
+                            </div>
+                            <div className="mt-1 flex items-center gap-1.5 text-[10px] font-mono text-slate-500">
+                              <span className="text-indigo-600 font-bold uppercase">
+                                [{rec.recordSource || 'follow'}]
+                              </span>
+                              <span>·</span>
+                              <span>{rec.operationData.apm} APM</span>
+                              <span>·</span>
+                              <span>{rec.recordedAt}</span>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="px-4 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-between gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setUpgradingSkillId(null)}
+                    className="px-3 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    disabled={upgradeSelectedRecordIds.length === 0}
+                    onClick={handleConfirmSkillUpgrade}
+                    className="flex-1 py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <Zap className="w-3.5 h-3.5 text-amber-300 fill-current" />
+                    <span>
+                      Upgrade with {upgradeSelectedRecordIds.length} Record(s)
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* In-Agent Modal D: Share Skill Card */}
+        {sharingSkillId && (() => {
+          const shareSkill = userState.agent.perks.find((p) => p.id === sharingSkillId);
+          if (!shareSkill) return null;
+          const assocGame = getSkillAssociatedGame(shareSkill.id, shareSkill.gameId);
+          const versionLabel = shareSkill.version || `v${shareSkill.skillLevel || 1}.0`;
+          const shareCode = `nexus://skill/${shareSkill.id}?name=${encodeURIComponent(
+            shareSkill.name
+          )}&v=${encodeURIComponent(versionLabel)}&game=${assocGame.shortName}`;
+
+          return (
+            <div className="absolute inset-0 z-40 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-in fade-in duration-150">
+              <div className="w-full max-w-sm rounded-2xl bg-white border border-slate-200 shadow-2xl overflow-hidden flex flex-col">
+                <div className="px-4 py-3 bg-slate-900 text-white flex items-center justify-between gap-2">
+                  <span className="text-xs font-black flex items-center gap-1.5">
+                    <Share2 className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Share Tactical Skill</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSharingSkillId(null)}
+                    className="p-1 rounded-lg text-slate-400 hover:text-white cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="p-4 space-y-3 text-xs">
+                  <div className="p-3 rounded-xl bg-slate-950 text-white border border-slate-800 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="font-black text-sm text-white">{shareSkill.name}</span>
+                      <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 font-mono text-[10px] font-bold">
+                        {versionLabel}
+                      </span>
+                    </div>
+                    <p className="text-slate-300 text-xs">{shareSkill.description}</p>
+                    <div className="pt-1 flex items-center justify-between text-[11px] font-mono text-slate-400">
+                      <span>
+                        {assocGame.emoji} {assocGame.name} (@{assocGame.shortName})
+                      </span>
+                      <span className="text-emerald-400">{shareSkill.metricLabel}</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <span className="text-[11px] font-bold text-slate-500">
+                      Skill Share URI:
+                    </span>
+                    <div className="p-2 rounded-xl bg-slate-100 border border-slate-200 font-mono text-[11px] text-slate-700 break-all">
+                      {shareCode}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="px-4 py-3 bg-slate-50 border-t border-slate-100 flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleToggleAttachment({
+                        id: shareSkill.id,
+                        type: 'skill',
+                        name: `${shareSkill.name} (${versionLabel})`,
+                        subtitle: shareSkill.metricLabel || shareSkill.description
+                      });
+                      setSharingSkillId(null);
+                      onChangeTab('chat');
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    Attach to Chat
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (typeof navigator !== 'undefined' && navigator.clipboard) {
+                        navigator.clipboard.writeText(shareCode).catch(() => {});
+                      }
+                      showToast(`Copied Share URI for ${shareSkill.name}`);
+                      setSharingSkillId(null);
+                    }}
+                    className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy Share Link</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* In-Agent Modal E: 3D Avatar & Name Customization Panel (Inside #agent-console) */}
         <AvatarCustomizationModal
           isOpen={isCustomizationOpen}
           onClose={() => setIsCustomizationOpen(false)}

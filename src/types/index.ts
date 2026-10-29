@@ -27,6 +27,7 @@ export type GameCategory =
 
 export interface GameItem {
   id: string;
+  shortName?: string; // e.g. "cyber", "mecha", "td"
   name: string;
   category: GameCategory;
   tagline: string;
@@ -49,6 +50,10 @@ export interface GameItem {
 export interface AgentPerk {
   id: string;
   name: string;
+  shortName?: string;
+  gameId?: string;
+  gameName?: string;
+  gameEmoji?: string;
   description: string;
   unlocked: boolean;
   requiredLevel: number;
